@@ -1,0 +1,179 @@
+# Open-Inspect on Dokploy: control plane + object store + litestream + web app,
+# routed by the host's Dokploy Traefik (dokploy-network) instead of published
+# ports or Caddy. All variables come from the Dokploy compose service's
+# environment (docker compose interpolation), so nothing here needs a .env
+# file in the repo.
+#
+# Service discovery (docs/CONTROL_PLANE_CONTAINER.md applies, with Traefik in
+# place of the published port):
+#   app     -> https://openinspect-cp.eduqat.com   (API, WebSockets, callbacks)
+#   web     -> https://openinspect.eduqat.com      (Next.js dashboard)
+
+x-traefik-labels-cp: &traefik-cp
+  traefik.enable: "true"
+  traefik.docker.network: dokploy-network
+  traefik.http.routers.openinspect-cp.entrypoints: web
+  traefik.http.routers.openinspect-cp.rule: Host(`openinspect-cp.eduqat.com`)
+  traefik.http.routers.openinspect-cp.service: openinspect-cp
+  traefik.http.services.openinspect-cp.loadbalancer.server.port: "8787"
+
+x-traefik-labels-web: &traefik-web
+  traefik.enable: "true"
+  traefik.docker.network: dokploy-network
+  traefik.http.routers.openinspect-web.entrypoints: web
+  traefik.http.routers.openinspect-web.rule: Host(`openinspect.eduqat.com`)
+  traefik.http.routers.openinspect-web.service: openinspect-web
+  traefik.http.services.openinspect-web.loadbalancer.server.port: "3000"
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: packages/control-plane/Dockerfile
+    image: open-inspect-control-plane:dokploy
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8787"
+      DATA_DIR: /data
+      SHUTDOWN_TIMEOUT_MS: "30000"
+      DEPLOYMENT_NAME: ${DEPLOYMENT_NAME:?}
+      APP_NAME: ${APP_NAME:-Open-Inspect}
+      GITHUB_BOT_USERNAME: ${GITHUB_BOT_USERNAME:?}
+      WORKER_URL: ${WORKER_URL:?}
+      WEB_APP_URL: ${WEB_APP_URL:?}
+      SCM_PROVIDER: ${SCM_PROVIDER:-github}
+      TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:?}
+      PROVIDER_ACCOUNTS_ENCRYPTION_KEY: ${PROVIDER_ACCOUNTS_ENCRYPTION_KEY:?}
+      REPO_SECRETS_ENCRYPTION_KEY: ${REPO_SECRETS_ENCRYPTION_KEY:?}
+      IMAGE_CALLBACK_TOKEN_PEPPER: ${IMAGE_CALLBACK_TOKEN_PEPPER:-}
+      BROWSER_AUTH_SECRET: ${BROWSER_AUTH_SECRET:?}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      ALLOWED_USERS: ${ALLOWED_USERS:-}
+      ALLOWED_EMAIL_DOMAINS: ${ALLOWED_EMAIL_DOMAINS:-}
+      ALLOWED_EMAILS: ${ALLOWED_EMAILS:-}
+      ALLOWED_GITHUB_ORGS: ${ALLOWED_GITHUB_ORGS:-}
+      UNSAFE_ALLOW_ALL_USERS: ${UNSAFE_ALLOW_ALL_USERS:-}
+      SERVICE_AUTH_SECRET_WEB: ${SERVICE_AUTH_SECRET_WEB:?}
+      GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+      GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY:-}
+      GITHUB_APP_INSTALLATION_ID: ${GITHUB_APP_INSTALLATION_ID:-}
+      SANDBOX_PROVIDER: ${SANDBOX_PROVIDER:-modal}
+      MODAL_API_SECRET: ${MODAL_API_SECRET:-}
+      MODAL_WORKSPACE: ${MODAL_WORKSPACE:-}
+      MODAL_ENVIRONMENT: ${MODAL_ENVIRONMENT:-}
+      MODAL_ENVIRONMENT_WEB_SUFFIX: ${MODAL_ENVIRONMENT_WEB_SUFFIX:-}
+      SANDBOX_INACTIVITY_TIMEOUT_MS: ${SANDBOX_INACTIVITY_TIMEOUT_MS:-}
+      EXECUTION_TIMEOUT_MS: ${EXECUTION_TIMEOUT_MS:-}
+      TEAMS_ENFORCEMENT: ${TEAMS_ENFORCEMENT:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      OBJECT_STORE_BUCKET: ${OBJECT_STORE_BUCKET:-media}
+      OBJECT_STORE_REGION: ${OBJECT_STORE_REGION:-us-east-1}
+      OBJECT_STORE_ENDPOINT: http://object-store:9000
+      OBJECT_STORE_ALLOW_HTTP: "true"
+      OBJECT_STORE_FORCE_PATH_STYLE: "true"
+      AWS_ACCESS_KEY_ID: ${OBJECT_STORE_ROOT_USER:-objectstoreadmin}
+      AWS_SECRET_ACCESS_KEY: ${OBJECT_STORE_ROOT_PASSWORD:?}
+    labels:
+      <<: *traefik-cp
+    networks:
+      - default
+      - dokploy-network
+    volumes:
+      - control-plane-data:/data
+    depends_on:
+      object-store:
+        condition: service_healthy
+    restart: unless-stopped
+
+  object-store:
+    image: chrislusf/seaweedfs:4.47@sha256:ce9e796f1fe6f06968f4c04bdaf8f678dad9c8acdfef3d244133d71bfa6bf882
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        WEED_JWT_FILER_SIGNING_KEY="$$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+        export WEED_JWT_FILER_SIGNING_KEY
+        /entrypoint.sh server -ip=127.0.0.1 -ip.bind=127.0.0.1 -s3.ip.bind=0.0.0.0 \
+          -master.peers=none -master.telemetry=false -volume.preStopSeconds=1 \
+          -filer -s3 -s3.port=9000 -s3.port.iceberg=0 -s3.port.lance=0 &
+        server=$$!
+        trap 'kill -TERM "$$server"' TERM INT
+        until curl -sf -o /dev/null http://localhost:9000/healthz; do
+          kill -0 "$$server" 2>/dev/null || exit 1
+          sleep 1
+        done
+        IFS=,
+        for bucket in $$S3_BUCKET; do
+          echo "s3.bucket.create -name $$bucket" | weed shell -master=127.0.0.1:9333 >/dev/null
+        done
+        wait "$$server" || wait "$$server"
+    stop_grace_period: 20s
+    environment:
+      AWS_ACCESS_KEY_ID: ${OBJECT_STORE_ROOT_USER:-objectstoreadmin}
+      AWS_SECRET_ACCESS_KEY: ${OBJECT_STORE_ROOT_PASSWORD:?}
+      S3_BUCKET: ${OBJECT_STORE_BUCKET:-media},${LITESTREAM_BUCKET:-backups}
+    volumes:
+      - object-store-data:/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          curl -sf -o /dev/null http://localhost:9000/healthz &&
+          IFS=, && for bucket in $$S3_BUCKET; do
+          curl -sf -o /dev/null "http://localhost:8888/buckets/$$bucket/" || exit 1;
+          done
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 60s
+      start_interval: 2s
+    restart: unless-stopped
+
+  litestream:
+    image: litestream/litestream:0.3.13
+    user: "1000:1000"
+    command: replicate -config /etc/litestream.yml
+    environment:
+      LITESTREAM_BUCKET: ${LITESTREAM_BUCKET:-backups}
+      LITESTREAM_ENDPOINT: http://object-store:9000
+      LITESTREAM_ACCESS_KEY_ID: ${OBJECT_STORE_ROOT_USER:-objectstoreadmin}
+      LITESTREAM_SECRET_ACCESS_KEY: ${OBJECT_STORE_ROOT_PASSWORD:?}
+    volumes:
+      - control-plane-data:/data
+      - ./packages/control-plane/docker/litestream.yml:/etc/litestream.yml:ro
+    depends_on:
+      app:
+        condition: service_healthy
+      object-store:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: packages/web/Dockerfile
+      args:
+        NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:?}
+    image: open-inspect-web:dokploy
+    environment:
+      CONTROL_PLANE_URL: ${WORKER_URL:?}
+      NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:?}
+      SERVICE_AUTH_SECRET: ${SERVICE_AUTH_SECRET_WEB:?}
+    labels:
+      <<: *traefik-web
+    networks:
+      - default
+      - dokploy-network
+    depends_on:
+      - app
+    restart: unless-stopped
+
+networks:
+  dokploy-network:
+    external: true
+
+volumes:
+  control-plane-data:
+  object-store-data:
