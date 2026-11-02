@@ -9,7 +9,8 @@ COPY package.json package-lock.json ./
 COPY packages/shared/package.json packages/shared/
 COPY packages/web/package.json packages/web/
 RUN --mount=type=cache,target=/root/.npm \
-    npm ci --ignore-scripts --workspace=@open-inspect/shared --workspace=@open-inspect/web
+    npm ci --ignore-scripts --include-workspace-root \
+      --workspace=@open-inspect/shared --workspace=@open-inspect/web
 COPY packages/shared/ packages/shared/
 COPY packages/web/ packages/web/
 
