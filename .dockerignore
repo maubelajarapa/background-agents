@@ -5,6 +5,7 @@
 !package-lock.json
 !packages/shared/
 !packages/control-plane/
+!packages/web/
 !packages/sandbox-runtime/src/sandbox_runtime/*.json
 !terraform/d1/migrations/
 packages/**/node_modules/
