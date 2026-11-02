@@ -1,0 +1,80 @@
+# Deploys the Dokploy compose stack (control plane + web + object store +
+# litestream) on the Hetzner host. Triggers on pushes to the `dokploy` branch
+# that touch deployable paths, and manually via the Actions "Run workflow"
+# button. Deployment is the Dokploy API call; this workflow then waits for the
+# build to finish and smoke-checks both public endpoints.
+#
+# Rollback: `git revert <commit> && git push` on `dokploy` — the action
+# redeploys the previous code. Expect ~10-30s of control-plane downtime per
+# deploy (single replica, container recreate).
+#
+# Required repo secrets:
+#   DOKPLOY_URL       e.g. https://dokploy.example.com
+#   DOKPLOY_API_KEY   Dokploy API key (x-api-key header)
+
+name: Deploy to Dokploy
+
+on:
+  push:
+    branches: [dokploy]
+    paths:
+      - "packages/control-plane/**"
+      - "packages/shared/**"
+      - "packages/web/**"
+      - "terraform/d1/migrations/**"
+      - "docker-compose.dokploy.yml"
+      - ".dockerignore"
+      - ".github/workflows/deploy-dokploy.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: dokploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      COMPOSE_ID: sc9DqonmrpKLmG9hJlOjg
+      CP_HEALTH_URL: https://openinspect-cp.eduqat.com/healthz
+      WEB_HEALTH_URL: https://openinspect.eduqat.com/
+      DOKPLOY_URL: ${{ secrets.DOKPLOY_URL }}
+      DOKPLOY_API_KEY: ${{ secrets.DOKPLOY_API_KEY }}
+    steps:
+      - name: Trigger Dokploy deployment
+        run: |
+          response="$(curl -sf -X POST "$DOKPLOY_URL/api/compose.deploy" \
+            -H "x-api-key: $DOKPLOY_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{\"composeId\":\"$COMPOSE_ID\"}")"
+          echo "Dokploy response: $response" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Wait for deployment to finish (max 15 min)
+        run: |
+          for i in $(seq 1 60); do
+            status="$(curl -sf "$DOKPLOY_URL/api/compose.one?composeId=$COMPOSE_ID" \
+              -H "x-api-key: $DOKPLOY_API_KEY" | jq -r .composeStatus || echo unknown)"
+            echo "attempt $i: composeStatus=$status"
+            if [ "$status" != "deploying" ] && [ "$status" != "unknown" ]; then
+              echo "Deployment finished with status: $status" | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::Deployment still in progress after 15 minutes"
+          exit 1
+
+      - name: Smoke check production (max 2 min)
+        run: |
+          check() { curl -sf --max-time 10 -o /dev/null "$1"; }
+          for i in $(seq 1 12); do
+            if check "$CP_HEALTH_URL" && check "$WEB_HEALTH_URL"; then
+              echo "Production healthy: $CP_HEALTH_URL and web app responding" \
+                | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "attempt $i: endpoints not ready yet"
+            sleep 10
+          done
+          echo "::error::Health check failed after deployment"
+          exit 1
