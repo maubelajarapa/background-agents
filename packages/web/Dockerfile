@@ -13,6 +13,8 @@ RUN --mount=type=cache,target=/root/.npm \
       --workspace=@open-inspect/shared --workspace=@open-inspect/web
 COPY packages/shared/ packages/shared/
 COPY packages/web/ packages/web/
+COPY scripts/ scripts/
+COPY packages/sandbox-runtime/src/sandbox_runtime/ packages/sandbox-runtime/src/sandbox_runtime/
 
 ARG NEXT_PUBLIC_WS_URL
 ARG NEXT_PUBLIC_APP_NAME
