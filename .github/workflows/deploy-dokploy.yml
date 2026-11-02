@@ -50,18 +50,40 @@ jobs:
           echo "Dokploy response: $response" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Wait for deployment to finish (max 15 min)
+        # composeStatus: "running" while the deployment builds/deploys, "done"
+        # after. "done" also lingers from the previous deployment, so first
+        # wait until this deployment starts ("running"), then wait for "done".
         run: |
+          fetch_status() {
+            curl -sf "$DOKPLOY_URL/api/compose.one?composeId=$COMPOSE_ID" \
+              -H "x-api-key: $DOKPLOY_API_KEY" | jq -r .composeStatus || echo unknown
+          }
+
+          started=0
+          for i in $(seq 1 90); do
+            status="$(fetch_status)"
+            echo "[$i] composeStatus=$status"
+            if [ "$status" = "running" ]; then
+              started=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$started" -ne 1 ]; then
+            echo "::error::Deployment never started (status stayed '$status' for 3 minutes)"
+            exit 1
+          fi
+
           for i in $(seq 1 60); do
-            status="$(curl -sf "$DOKPLOY_URL/api/compose.one?composeId=$COMPOSE_ID" \
-              -H "x-api-key: $DOKPLOY_API_KEY" | jq -r .composeStatus || echo unknown)"
-            echo "attempt $i: composeStatus=$status"
-            if [ "$status" != "deploying" ] && [ "$status" != "unknown" ]; then
+            status="$(fetch_status)"
+            echo "[$i] composeStatus=$status"
+            if [ "$status" = "done" ]; then
               echo "Deployment finished with status: $status" | tee -a "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
-            sleep 15
+            sleep 10
           done
-          echo "::error::Deployment still in progress after 15 minutes"
+          echo "::error::Deployment still 'running' after 10 minutes"
           exit 1
 
       - name: Smoke check production (max 2 min)
