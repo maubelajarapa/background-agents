@@ -165,11 +165,18 @@ export class AdmissionPolicy {
         );
         if (response.status === 404) continue;
         if (!response.ok) {
+          const body = await response.text().catch(() => "");
+          console.error(
+            `[admission] org membership check failed: org=${organization} status=${response.status} body=${body.slice(0, 500)}`
+          );
           unavailable = true;
           continue;
         }
         const parsed = membershipSchema.safeParse(await response.json().catch(() => null));
         if (!parsed.success) {
+          console.error(
+            `[admission] org membership response unparseable: org=${organization} status=${response.status}`
+          );
           unavailable = true;
           continue;
         }
