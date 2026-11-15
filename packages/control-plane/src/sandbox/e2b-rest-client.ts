@@ -15,6 +15,8 @@ export interface E2BRestConfig {
   apiUrl: string;
   apiKey: string;
   templateId: string;
+  /** Sandbox host suffix; used when the create response carries no `domain` (self-hosted). */
+  sandboxDomain?: string;
 }
 
 const TIMEOUT_CREATE_MS = 90_000;
@@ -91,7 +93,7 @@ export type E2BSnapshotInfo = z.infer<typeof e2bSnapshotInfoSchema>;
 
 /** Default port envd listens on inside every sandbox. */
 const ENVD_PORT = 49983;
-/** Default sandbox host suffix (overridden by the create response `domain`). */
+/** Default sandbox host suffix (overridden by the create response `domain` or config). */
 const DEFAULT_SANDBOX_DOMAIN = "e2b.app";
 
 export interface E2BCreateSandboxParams {
@@ -341,7 +343,7 @@ export class E2BRestClient {
     shellCommand: string,
     opts: { domain?: string | null; envdAccessToken: string; signal?: AbortSignal }
   ): Promise<void> {
-    const domain = opts.domain || DEFAULT_SANDBOX_DOMAIN;
+    const domain = opts.domain || this.config.sandboxDomain || DEFAULT_SANDBOX_DOMAIN;
     const url = `https://${ENVD_PORT}-${id}.${domain}/process.Process/Start`;
     const message = JSON.stringify({
       process: { cmd: "/bin/sh", args: ["-c", shellCommand] },
@@ -433,7 +435,7 @@ export class E2BRestClient {
   }
 
   getHostnameForPort(sandboxId: string, port: number, domain?: string | null): string {
-    return `https://${port}-${sandboxId}.${domain || DEFAULT_SANDBOX_DOMAIN}`;
+    return `https://${port}-${sandboxId}.${domain || this.config.sandboxDomain || DEFAULT_SANDBOX_DOMAIN}`;
   }
 
   private getHeaders(): Record<string, string> {

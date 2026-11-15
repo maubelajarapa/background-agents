@@ -129,6 +129,7 @@ function createE2BProviderFromEnv(env: Env): E2BSandboxProvider {
     apiUrl: env.E2B_API_URL || "https://api.e2b.app",
     apiKey: env.E2B_API_KEY,
     templateId: env.E2B_TEMPLATE_ID,
+    sandboxDomain: env.E2B_SANDBOX_DOMAIN,
   });
 
   return createE2BProvider(client, {

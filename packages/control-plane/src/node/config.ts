@@ -82,6 +82,7 @@ const ENV_CONFIG_KEYS = {
   E2B_API_KEY: true,
   E2B_API_URL: true,
   E2B_TEMPLATE_ID: true,
+  E2B_SANDBOX_DOMAIN: true,
   E2B_SANDBOX_TIMEOUT_SECONDS: true,
   E2B_AUTO_PAUSE: true,
   BOAT_API_KEY: true,

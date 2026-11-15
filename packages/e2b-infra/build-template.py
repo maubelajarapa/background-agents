@@ -9,6 +9,21 @@ import time
 from pathlib import Path
 
 from e2b import Sandbox, Template, default_build_logger
+from e2b.api.client.models import TemplateBuildRequestV3
+
+# The Template SDK does not expose the build request's `minFreeDiskMb` (the
+# free rootfs space the build VM is grown to). Self-hosted installs seed a tiny
+# default (512 MB), too small for the image bundle, so allow overriding it via
+# env by injecting the field through the request model's additional properties.
+_min_free_disk_mb = os.environ.get("E2B_MIN_FREE_DISK_MB")
+if _min_free_disk_mb:
+    _orig_request_init = TemplateBuildRequestV3.__init__
+
+    def _request_init_with_min_free_disk(self, *args, **kwargs):
+        _orig_request_init(self, *args, **kwargs)
+        self.additional_properties["minFreeDiskMb"] = int(_min_free_disk_mb)
+
+    TemplateBuildRequestV3.__init__ = _request_init_with_min_free_disk
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "packages/sandbox-images/src"))
@@ -38,7 +53,7 @@ def main() -> None:
     template = (
         Template(file_context_path=bundle.directory)
         .from_dockerfile("FROM " + plan["target"]["base"])
-        .copy(".", "/tmp/openinspect-image", user="root")
+        .copy(".", "/tmp/openinspect-image", user="root", force_upload=True)
         .run_cmd(
             "bash /tmp/openinspect-image/packages/sandbox-images/install/install.sh", user="root"
         )
@@ -59,6 +74,7 @@ def main() -> None:
             api_url=os.environ.get("E2B_API_URL"),
             cpu_count=cpu,
             memory_mb=memory_mb,
+            skip_cache=os.environ.get("E2B_SKIP_CACHE") == "1",
             on_build_logs=default_build_logger(min_level="info"),
         )
     )
