@@ -5,6 +5,8 @@ const monorepoRoot = path.join(__dirname, "../..");
 
 const nextConfig: NextConfig = {
   agentRules: false,
+  // TODO(security): remove once Next.js is upgraded past the 16.4.2 advisory.
+  experimental: { agentUpgrade: false },
   output: "standalone",
   // Both must match the monorepo root for Turbopack to resolve workspace packages
   outputFileTracingRoot: monorepoRoot,
