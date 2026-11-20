@@ -24,8 +24,14 @@ allowed-tools:
   - `app` = control plane → https://openinspect-cp.eduqat.com (health: `/healthz`)
   - `web` = Next.js standalone → https://openinspect.eduqat.com (WS URL baked at build time)
   - `object-store` + `litestream` (continuous `global.db` replication to the `backups` bucket)
-- **Modal data plane**: workspace `agung-widhiatmojo`, env `main`. NOT deployed by CI — always
-  manual (see below).
+- **Sandbox data plane**: **self-hosted E2b (Embed)** since 2026-11-14 — same Hetzner box,
+  `/opt/e2b` (docker compose). API `https://api.e2b.eduqat.com`, template `olqlqqiledvo9es0rj4g`,
+  sandbox URLs `*.e2b.eduqat.com`. Routed by the Dokploy Traefik via dynamic config
+  `/etc/dokploy/traefik/dynamic/e2b.yml` (`*.e2b.eduqat.com`→client-proxy:3002 prio 100,
+  `api.e2b.eduqat.com`→:4300 prio 200); wildcard cert renewed by a lego systemd timer on the server.
+  Prod env: `SANDBOX_PROVIDER=e2b` + `E2B_API_URL/E2B_API_KEY/E2B_TEMPLATE_ID/E2B_SANDBOX_DOMAIN`.
+- **Modal** (workspace `agung-widhiatmojo`, env `main`) is kept as a **cold fallback** — flip
+  `SANDBOX_PROVIDER=modal` in the Dokploy compose env + redeploy. Modal is NOT deployed by CI.
 - **Sign-in admission**: locked down — `ALLOWED_GITHUB_ORGS=maubelajarapa`, no
   `UNSAFE_ALLOW_ALL_USERS`. Only org members can sign in.
 - Container name prefix `compose-index-multi-byte-pixel-8woqyg-*`; SSH is `root@5.9.108.170`
@@ -78,7 +84,7 @@ gh run watch -R maubelajarapa/background-agents
 - Env var changes: Dokploy UI (compose → Environment) or `compose.update` API. `compose.create` only
   accepts name+environmentId; everything else goes through `compose.update`.
 
-### Modal (always manual)
+### Modal (rollback path only — not the active data plane)
 
 ```bash
 cd packages/modal-infra
@@ -86,6 +92,18 @@ uv run python deploy.py --build-sandbox-image && uv run modal deploy deploy.py
 ```
 
 Force image rebuild by bumping `CACHE_BUSTER` in `src/images/base.py`.
+
+### E2b sandbox image rebuild (active data plane)
+
+```bash
+cd packages/e2b-infra && uv sync --frozen
+E2B_API_KEY=<Embed key> E2B_API_URL=https://api.e2b.eduqat.com \
+E2B_TEMPLATE_ID=olqlqqiledvo9es0rj4g E2B_TEMPLATE_CPU=2 E2B_TEMPLATE_MEMORY_MB=2048 \
+E2B_MIN_FREE_DISK_MB=2048 uv run python build-template.py
+```
+
+Run ON THE SERVER (hugepages/KVM needed by the build VM). Writes the new template id via
+`write_build_result`; update `E2B_TEMPLATE_ID` in the Dokploy compose env to roll it out.
 
 ## 3. Verify
 
@@ -160,6 +178,21 @@ investigating.
 No UI — direct SQL on the server, deleting the user's rows across all tables in `/data/global.db`
 via `docker exec ... node -e "const {DatabaseSync}=require('node:sqlite');..."`. Check
 `user_identities`, `user_role_assignments`, `users`, `global_secrets`.
+
+### E2b sandbox spawn fails (data plane issues)
+
+- `Timeout cannot be greater than N hours`: Embed Postgres `default_limits`/`tiers`/`project_limits`
+  `max_length_hours` too low — UPDATE all three, restart the `api` container, then `redis FLUSHALL`
+  (limits are cached in-process).
+- Spawn fails after adding a Dokploy env var: `docker-compose.dokploy.yml` whitelists env per
+  service — the var must be added to the `app` service's `environment:` block and redeployed.
+- Sandboxes unreachable at `*.e2b.eduqat.com`: check Traefik dynamic
+  `/etc/dokploy/traefik/dynamic/e2b.yml` routing + the lego cert timer
+  (`systemctl list-timers | grep lego`).
+- Capacity: hugepages limit concurrent VMs (~8.7GB live pool until the next reboot unlocks the full
+  16GB configured in grub — `grep Huge /proc/meminfo`).
+- List sandboxes: `curl -H "X-API-Key: <E2B_API_KEY>" https://api.e2b.eduqat.com/sandboxes` —
+  OpenInspect ones carry `metadata.openinspect_session_id`.
 
 ## 6. Known users / access
 
